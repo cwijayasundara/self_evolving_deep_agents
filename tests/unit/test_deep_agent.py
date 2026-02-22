@@ -46,13 +46,13 @@ class TestBuildMemoryContext:
         assert "Learned Facts" in result
         assert "Specific queries" in result
 
-    def test_limits_memory_count(self, memory_store):
+    def test_respects_token_budget(self, memory_store):
         for i in range(10):
             memory_store.store("episodic", f"r{i}", {
-                "summary": f"Memory item {i}",
+                "summary": f"Memory item {i} " + "detail " * 80,
                 "task": "test task",
             })
-        result = build_memory_context(memory_store, "test task")
-        # Should limit to 3 episodic memories (count bullet items)
-        bullet_count = result.count("- Memory item")
-        assert bullet_count <= 3
+        # Use a small token budget so not all memories fit
+        result = build_memory_context(memory_store, "test task", token_budget=100)
+        # 100 tokens ~ 400 chars; output should be bounded
+        assert len(result) < 800

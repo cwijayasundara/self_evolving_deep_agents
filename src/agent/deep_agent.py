@@ -22,6 +22,7 @@ from langgraph.graph.state import CompiledStateGraph
 from src.agent.prompt_store import PromptStore
 from src.agent.prompts import DEFAULT_SYSTEM_PROMPT
 from src.config.settings import Settings
+from src.memory.compression import compress_memory_context
 from src.memory.store import MemoryStore
 from src.tools.search import create_search_tool
 
@@ -110,25 +111,17 @@ def create_llm(settings: Settings) -> BaseChatModel:
     )
 
 
-def build_memory_context(memory_store: MemoryStore, task: str) -> str:
-    """Retrieve relevant memories and format them for prompt injection."""
-    episodic = memory_store.search("episodic", task)
-    semantic = memory_store.search("semantic", task)
+def build_memory_context(
+    memory_store: MemoryStore,
+    task: str,
+    token_budget: int = 2000,
+) -> str:
+    """Retrieve relevant memories and format them for prompt injection.
 
-    if not episodic and not semantic:
-        return ""
-
-    parts = ["\n\n## Relevant Past Experience"]
-    if episodic:
-        parts.append("### Previous Runs")
-        for mem in episodic[:3]:
-            parts.append(f"- {mem.get('summary', str(mem))}")
-    if semantic:
-        parts.append("### Learned Facts & Patterns")
-        for mem in semantic[:5]:
-            parts.append(f"- {mem.get('content', str(mem))}")
-
-    return "\n".join(parts)
+    Delegates to compress_memory_context to respect a token budget and
+    prevent unbounded context growth.
+    """
+    return compress_memory_context(memory_store, task, token_budget=token_budget)
 
 
 def create_agent(
@@ -145,6 +138,7 @@ def create_agent(
     - Tavily search tool for web research
     - Memory-augmented system prompt
     - Skills from the project skills/ directory
+    - Optional sub-agents for research/synthesis isolation
     """
     llm = create_llm(settings)
     search_tool = create_search_tool(settings)
@@ -155,8 +149,11 @@ def create_agent(
     # Get the current best prompt or use default
     prompt = prompt_store.get_current_prompt() or DEFAULT_SYSTEM_PROMPT
 
-    # Inject memory context if a task is provided
-    memory_context = build_memory_context(memory_store, task) if task else ""
+    # Inject memory context if a task is provided (token-budgeted)
+    memory_context = (
+        build_memory_context(memory_store, task, token_budget=settings.memory_token_budget)
+        if task else ""
+    )
     prompt = prompt.format(memory_context=memory_context)
 
     # Discover learned skills and pass to deepagents for injection
@@ -164,21 +161,36 @@ def create_agent(
     if settings.skills_path.exists():
         skills_sources = [str(settings.skills_path)]
 
+    # Build sub-agents if enabled
+    subagents = None
+    if settings.use_subagents:
+        from src.agent.subagents import build_research_subagent, build_synthesis_subagent
+
+        subagents = [
+            build_research_subagent(settings),
+            build_synthesis_subagent(settings),
+        ]
+
     logger.info(
-        "Creating agent '%s' with model=%s, tools=%d, skills=%d",
+        "Creating agent '%s' with model=%s, tools=%d, skills=%d%s",
         AGENT_NAME,
         settings.model,
         len(tools),
         len(skills_sources),
+        f", subagents={len(subagents)}" if subagents else "",
     )
 
-    return create_deep_agent(
-        model=llm,
-        tools=tools,
-        system_prompt=prompt,
-        name=AGENT_NAME,
-        skills=skills_sources or None,
-    )
+    kwargs: dict[str, Any] = {
+        "model": llm,
+        "tools": tools,
+        "system_prompt": prompt,
+        "name": AGENT_NAME,
+        "skills": skills_sources or None,
+    }
+    if subagents:
+        kwargs["subagents"] = subagents
+
+    return create_deep_agent(**kwargs)
 
 
 def extract_output(result: dict[str, Any]) -> str:

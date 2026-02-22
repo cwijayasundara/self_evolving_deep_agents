@@ -25,6 +25,7 @@ from src.evolution.state import (
     EvolutionMetrics,
     OrchestratorState,
 )
+from src.memory.compression import consolidate_episodic, deduplicate_semantic
 from src.memory.reflection import reflect_and_store
 from src.memory.store import MemoryStore
 from src.tracing.fetcher import TraceFetcher
@@ -166,6 +167,23 @@ def build_orchestrator_graph(
         logger.info("Memory totals: %d episodic, %d semantic", total_ep, total_sem)
         return {}
 
+    def node_compress_memories(state: OrchestratorState) -> dict[str, Any]:
+        """Compress memories: deduplicate semantic and consolidate old episodic."""
+        logger.info("--- Compress Memories ---")
+        deduped = deduplicate_semantic(
+            memory_store,
+            threshold=settings.compression_similarity_threshold,
+        )
+        consolidated = consolidate_episodic(
+            memory_store,
+            current_cycle=state["current_cycle"],
+        )
+        logger.info(
+            "Compressed memories: %d semantic deduplicated, %d episodic consolidated",
+            deduped, consolidated,
+        )
+        return {}
+
     def node_extract_skills(state: OrchestratorState) -> dict[str, Any]:
         """Extract skills from successful trajectories."""
         logger.info("--- Extract Skills ---")
@@ -274,6 +292,7 @@ def build_orchestrator_graph(
     graph.add_node("fetch_traces", node_fetch_traces)
     graph.add_node("analyze", node_analyze)
     graph.add_node("reflect", node_reflect)
+    graph.add_node("compress_memories", node_compress_memories)
     graph.add_node("extract_skills", node_extract_skills)
     graph.add_node("optimize_prompt", node_optimize_prompt)
     graph.add_node("aggregate_metrics", node_aggregate_metrics)
@@ -283,7 +302,8 @@ def build_orchestrator_graph(
     graph.add_edge("run_batch", "fetch_traces")
     graph.add_edge("fetch_traces", "analyze")
     graph.add_edge("analyze", "reflect")
-    graph.add_edge("reflect", "extract_skills")
+    graph.add_edge("reflect", "compress_memories")
+    graph.add_edge("compress_memories", "extract_skills")
     graph.add_edge("extract_skills", "optimize_prompt")
     graph.add_edge("optimize_prompt", "aggregate_metrics")
 

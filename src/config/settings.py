@@ -56,6 +56,13 @@ class Settings(BaseSettings):
     prompts_dir: str = "prompts"
     memory_dir: str = "memory"
 
+    # Memory compression
+    memory_token_budget: int = 2000
+    compression_similarity_threshold: float = 0.7
+
+    # Sub-agents
+    use_subagents: bool = False
+
     # Logging
     log_level: str = "INFO"
 
